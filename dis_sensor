@@ -1,0 +1,315 @@
+#include "main.h"
+#include "stdio.h"
+extern TIM_HandleTypeDef htim1;
+extern TIM_HandleTypeDef htim2;
+extern TIM_HandleTypeDef htim3;
+extern TIM_HandleTypeDef htim6;
+extern ADC_HandleTypeDef hadc1;
+extern TIM_HandleTypeDef htim7;
+
+#define data_high() Data_GPIO_Port->BSRR=Data_Pin
+#define data_low() Data_GPIO_Port->BRR=Data_Pin
+
+#define shift_high() SC_GPIO_Port->BSRR=SC_Pin
+#define shift_low() SC_GPIO_Port->BRR=SC_Pin
+
+#define latch_high() LC_GPIO_Port->BSRR=LC_Pin
+#define latch_low() LC_GPIO_Port->BRR=LC_Pin
+
+#define s0_high() s0_GPIO_Port->BSRR=s0_Pin
+#define s0_low() s0_GPIO_Port->BRR=s0_Pin
+
+#define s1_high() s1_GPIO_Port->BSRR=s1_Pin
+#define s1_low() s1_GPIO_Port->BRR=s1_Pin
+
+#define s2_high() s2_GPIO_Port->BSRR=s2_Pin
+#define s2_low() s2_GPIO_Port->BRR=s2_Pin
+
+#define s3_high() s3_GPIO_Port->BSRR=s3_Pin
+#define s3_low() s3_GPIO_Port->BRR=s3_Pin
+
+#define trig_high() TRIG_GPIO_Port->BSRR=TRIG_Pin
+#define trig_low() TRIG_GPIO_Port->BRR=TRIG_Pin
+
+#define trig2_high() TRIG2_GPIO_Port->BSRR=TRIG2_Pin
+#define trig2_low() TRIG2_GPIO_Port->BRR=TRIG2_Pin
+
+#define read_echo() ECHO_GPIO_Port->IDR & ECHO_Pin
+
+#define read_echo2() ECHO2_GPIO_Port->IDR & ECHO2_Pin
+
+unsigned int db[8]={0x0003,0x009f,0x0025,0x000d,0x0099,0x0049,0x0041,0x001b };
+const unsigned int font[]={0x0003,0x009f, 0x0025, 0x000d , 0x0099, 0x0049, 0x0041, 0x001b,0x0001,0x0019};
+unsigned int black = 0x00ff;
+
+int msec,sec=0,min=0;
+
+uint32_t ADC_Val=0;
+unsigned int low = 0;
+
+int i = 0;
+int l = 0;
+int j = 0;
+
+void seg_off(void)
+{
+	unsigned int off;
+
+
+	off = black;
+	if((sec % 10) == i){
+		latch_low();
+				shift_low();
+				if(off & (1 << i)) { data_high();}	else{data_low();}
+				shift_high();
+		latch_high();
+	}
+
+}
+
+void disp_seg(void)
+{
+	const unsigned int address[]={0x0800,0x0400, 0x0200, 0x0100 , 0x8000, 0x4000, 0x2000, 0x1000};
+		unsigned int data;
+
+		if (msec<999) msec++;
+		else
+		{	msec=0;
+			if (sec<58) sec++;
+			else { sec=0; min++; }
+
+		}
+
+		i = (i<7) ? i+1 : 0;
+		data = address[i] | db[i];
+		latch_low();
+		for(j=0; j<16; j++){
+			shift_low();
+			if(data & (1 << j)) { data_high();}	else{data_low();}
+			shift_high();
+		}
+		latch_high();
+}
+
+void dig4L(unsigned int k)
+{	k = k % 10000;
+	db[0] =font[ k /1000 ];
+	db[1] =font[ ( k % 1000 )/100 ];
+	db[2] =font[ ( k % 100 ) /10 ];
+	db[3] =font[ k % 10 ];
+
+}
+
+void dig4R(unsigned int k)
+{	k = k % 10000;
+	db[4] =font[ k /1000 ];
+	db[5] =font[ ( k % 1000 )/100 ];
+	db[6] =font[ ( k % 100 ) /10 ];
+	db[7] =font[ k % 10 ];
+}
+
+void dig8(unsigned int k)
+{	dig4L(k/10000);
+	dig4R(k%10000);
+}
+
+void seg_main(void)
+{
+
+	int old = 0;
+	unsigned int k=0;
+	HAL_TIM_Base_Start_IT(&htim1);
+	HAL_TIM_PWM_Start_IT(&htim1,TIM_CHANNEL_1);
+	HAL_TIM_PWM_Start(&htim2,TIM_CHANNEL_1);
+	while(1)
+	{	k++;
+		dig8(k);
+
+		if (old != sec)
+		{
+			old=sec;
+			TIM2->CCR1 = 100 * (sec % 10);
+			//TIM1->CCR1 = 100 * (sec % 10);
+
+
+			TIM1->CCR1 = 0;
+
+
+		}
+	}
+}
+
+void motor(void){
+
+	static uint32_t position = 0;
+
+	if(position < low) position++;
+	else if(position > low) position--;
+
+	dig4L(position);
+
+	switch(position % 8){
+	case 0: s0_high(); s1_low(); s2_low(); s3_low(); break;
+	case 1: s0_high(); s1_high(); s2_low(); s3_low(); break;
+	case 2: s0_low(); s1_high(); s2_low(); s3_low(); break;
+	case 3: s0_low(); s1_high(); s2_high(); s3_low(); break;
+	case 4: s0_low(); s1_low(); s2_high(); s3_low(); break;
+	case 5: s0_low(); s1_low(); s2_high(); s3_high(); break;
+	case 6: s0_low(); s1_low(); s2_low(); s3_high(); break;
+	case 7: s0_high(); s1_low(); s2_low(); s3_high(); break;
+	}
+}
+
+unsigned int LPF(unsigned int low , int tau, uint32_t adc) {
+
+	low = (tau*low + adc) / (tau + 1);
+
+	return low;
+}
+
+void ADC_main(void){
+
+	uint32_t ADC_Val=0;
+	unsigned int low = 0;//init low
+	int tau = 12;
+
+	HAL_TIM_Base_Start_IT(&htim1);
+	while(!(HAL_ADCEx_Calibration_Start(&hadc1)==HAL_OK));
+
+	while (1)
+	  {
+	    HAL_ADC_Start(&hadc1);
+	    ADC_Val=HAL_ADC_GetValue(&hadc1);
+
+	    dig4L(ADC_Val);
+
+	    low = LPF(low, tau, ADC_Val);
+
+	    dig4R(low);
+
+	  }
+
+}
+
+void motor_main(void){
+
+	int tau = 20;
+	s0_low(); s1_low(); s2_low(); s3_low();
+	HAL_TIM_Base_Start_IT(&htim1);
+	HAL_TIM_Base_Start_IT(&htim3);
+	while(!(HAL_ADCEx_Calibration_Start(&hadc1)==HAL_OK));
+
+	while (1)
+	  {
+
+		HAL_ADC_Start(&hadc1);
+	    ADC_Val=HAL_ADC_GetValue(&hadc1);
+
+	    low = LPF(low, tau, ADC_Val);
+	    dig4R(low);
+
+	  }
+
+}
+
+unsigned int MIN1(unsigned int value[]){
+
+	unsigned int min = 0;
+
+	for(int x = 0 ; x < 10; x++){
+		if(value[i] < value[i+1]) min = value[i];
+		else min = value[i+1];
+	}
+
+	return min;
+}
+
+unsigned int MIN2(unsigned int value[]){
+
+	unsigned int min = 0;
+
+	for(int x = 0 ; x < 10; x++){
+		if(value[i] < value[i+1]) min = value[i];
+		else min = value[i+1];
+	}
+
+	return min;
+}
+
+void dis_main(void){
+
+		unsigned int mode1, mode2, distance1, distance2, count1, count2, pt1, pt2 = 0;
+		unsigned int value1[10];
+		unsigned int value2[10];
+
+		HAL_TIM_Base_Start_IT(&htim1);
+		HAL_TIM_Base_Start(&htim6);
+		//HAL_TIM_Base_Start(&htim7);
+
+		while (1)
+		  {
+
+			switch(mode1){
+				case 0: TIM6 ->CNT = 0;
+						trig_high();
+						mode1 = 1;
+						break;
+				case 1: if(TIM6 ->CNT >= 10) {
+							trig_low();
+							mode1 = 2;
+				}
+							break;
+				case 2: if(read_echo()) {
+							mode1 = 3;
+							TIM6 ->CNT = 0;
+				}
+						break;
+
+				case 3: if((read_echo()) == 0){
+							distance1 = (TIM6 ->CNT * 170) / 1000;
+							//dig4R(distance1);
+							count1 = TIM6->CNT;
+							for(int x= 0; TIM6->CNT< count1 + 11; x++){
+								value1[x] = distance1;
+							}
+							mode1 = 4;
+
+				}
+							break;
+
+							case 4: TIM6 ->CNT = 0;
+									trig2_high();
+									mode1 = 5;
+									break;
+							case 5: if(TIM6 ->CNT >= 10) {
+										trig2_low();
+										mode1 = 6;
+							}
+										break;
+							case 6: if(read_echo2()) {
+										mode1 = 7;
+										TIM6 ->CNT = 0;
+							}
+									break;
+
+							case 7: if((read_echo2()) == 0){
+										distance2 = (TIM6 ->CNT * 170) / 1000;
+										//dig4L(distance2);
+										count2 = TIM6->CNT;
+										for(int x= 0; TIM6->CNT< count2 + 11; x++){
+										value2[x] = distance2;
+										}
+										mode1 = 8;
+										pt2++;
+							}
+										break;
+			}
+
+				if(TIM6 ->CNT > 50000) {mode1 = 0;
+					if(pt2 > 10) {dig4R(distance1);
+								  dig4L(distance2);
+								  pt2 = 0;}
+				}
+
+		  }
+}
